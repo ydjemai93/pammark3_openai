@@ -29,7 +29,7 @@ const openai = new OpenAI();
 
 // Configuration TTS via OpenAI Audio API en streaming realtime TTS HD
 const TTS_MODEL = "tts-1-hd";
-const TTS_VOICE = "alloy";
+const TTS_VOICE = "sage";
 
 // Conversation Settings & Prompts
 const systemMessage = "Tu es Pam, un agent de call center intelligent et accessible, doté d’une large palette de compétences : gestion des appels, support client, assistance technique et aide à la vente. Ta manière de communiquer doit rester conviviale et naturelle, sans répéter mécaniquement tes fonctionnalités.";
