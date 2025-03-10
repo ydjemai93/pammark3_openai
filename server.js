@@ -27,7 +27,7 @@ const deepgramClient = createClient(process.env.DEEPGRAM_API_KEY);
 const OpenAI = require("openai");
 const openai = new OpenAI();
 
-// OpenAI Audio API pour streaming realtime TTS HD
+// Configuration TTS via OpenAI Audio API en streaming realtime TTS HD
 const TTS_MODEL = "tts-1-hd";
 const TTS_VOICE = "alloy";
 
@@ -35,13 +35,13 @@ const TTS_VOICE = "alloy";
 const systemMessage = "Tu es Pam, un agent de call center intelligent et accessible, doté d’une large palette de compétences : gestion des appels, support client, assistance technique et aide à la vente. Ta manière de communiquer doit rester conviviale et naturelle, sans répéter mécaniquement tes fonctionnalités.";
 const initialAssistantMessage = "Bonjour, ici Pam. Merci d’avoir pris contact. Comment puis-je vous aider aujourd’hui ?";
 
-// Nous ne voulons injecter le message système et initial qu'une seule fois
+// On n'injecte le message système et initial qu'une seule fois au début.
 const BASE_CONVERSATION = [
   { role: "system", content: systemMessage },
   { role: "assistant", content: initialAssistantMessage }
 ];
 
-const CONVERSATION_HISTORY_LIMIT = 4; // on conserve uniquement les derniers échanges pertinents
+const CONVERSATION_HISTORY_LIMIT = 4;
 const PORT = process.env.PORT || 8080;
 const BACKCHANNELS = ["D'accord", "Je vois", "Très bien", "Hmm"];
 
@@ -142,7 +142,7 @@ class MediaStream {
     this.connection = connection;
     this.streamSid = "";
     this.active = true;
-    // Initialiser la conversation avec le contexte de base (uniquement au début)
+    // Historique initial avec le contexte de base
     this.conversation = [...BASE_CONVERSATION];
     console.log(`[${new Date().toISOString()}] Conversation initiale:`, JSON.stringify(this.conversation, null, 2));
     this.inputDebounceTimer = null; // Pour regrouper les inputs utilisateur
@@ -201,7 +201,6 @@ class MediaStream {
         console.log(`[${new Date().toISOString()}] speak => TTS abort triggered, skipping audio send`);
         return;
       }
-      // Conversion via ffmpeg pour obtenir du mulaw (si nécessaire pour votre cas d'usage)
       const mulawBuffer = await this.convertAudio(audioBuffer);
       if (ttsAbort) return;
       this.sendAudioChunks(mulawBuffer);
@@ -211,7 +210,7 @@ class MediaStream {
     }
   }
 
-  // --- Utilisation du streaming realtime TTS HD d'OpenAI ---
+  // --- Utilisation de l'API Audio d'OpenAI pour le streaming realtime TTS HD ---
   async synthesizeSpeech(text) {
     const speechResponse = await openai.audio.speech.create({
       model: TTS_MODEL,
@@ -279,15 +278,11 @@ class MediaStream {
       return;
     }
     console.log(`[${new Date().toISOString()}] User input received: "${transcript}"`);
-    // Interrompre toute réponse en cours
     ttsAbort = true;
     await this.sleep(200);
-    // Ajouter le message utilisateur à l'historique
     this.conversation.push({ role: "user", content: transcript });
     console.log(`[${new Date().toISOString()}] Updated conversation history (avant debounce):`, JSON.stringify(this.conversation, null, 2));
-    // Garder uniquement les derniers échanges (sans réinjecter le système et l'initial si déjà envoyés)
     this.conversation = this.conversation.slice(-CONVERSATION_HISTORY_LIMIT);
-    // Appliquer un debounce de 800ms avant de générer la réponse
     if (this.inputDebounceTimer) clearTimeout(this.inputDebounceTimer);
     this.inputDebounceTimer = setTimeout(async () => {
       ttsAbort = false;
@@ -330,10 +325,8 @@ class MediaStream {
       }
       if (fullResponse.trim() && !ttsAbort) {
         console.log(`[${new Date().toISOString()}] Assistant response generated: "${fullResponse.trim()}"`);
-        // Pour éviter les répétitions inutiles, à partir du deuxième échange,
-        // on peut retirer le message système et l'initial si présents.
+        // Conserver uniquement les derniers échanges pertinents
         if (this.conversation.length > 2) {
-          // On ne garde que les derniers échanges pertinents
           this.conversation = this.conversation.slice(2);
         }
         this.conversation.push({ role: "assistant", content: fullResponse });
@@ -362,5 +355,4 @@ class MediaStream {
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   if (!process.env.DEEPGRAM_API_KEY) console.error("DEEPGRAM_API_KEY manquant !");
-  if (!ELEVENLABS_API_KEY) console.error("ELEVENLABS_API_KEY manquant !");
 });
