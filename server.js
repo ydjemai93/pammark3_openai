@@ -27,19 +27,23 @@ const deepgramClient = createClient(process.env.DEEPGRAM_API_KEY);
 const OpenAI = require("openai");
 const openai = new OpenAI();
 
-// Pour TTS via OpenAI Audio API en streaming realtime HD
-// Utilisation du modèle "tts-1-hd" et d'une voix (ici "alloy")
+// OpenAI Audio API pour streaming realtime TTS HD
 const TTS_MODEL = "tts-1-hd";
 const TTS_VOICE = "alloy";
 
 // Conversation Settings & Prompts
-const systemMessage = "Tu es Pam, un agent de call center intelligent et accessible, doté d’une large palette de compétences : gestion des appels, support client, assistance technique et aide à la vente. Ta manière de communiquer doit rester conviviale et naturelle. Plutôt que de lister tes capacités, tu les utilises au fil de la conversation pour répondre aux besoins du client de façon fluide et humaine.";
+const systemMessage = "Tu es Pam, un agent de call center intelligent et accessible, doté d’une large palette de compétences : gestion des appels, support client, assistance technique et aide à la vente. Ta manière de communiquer doit rester conviviale et naturelle, sans répéter mécaniquement tes fonctionnalités.";
 const initialAssistantMessage = "Bonjour, ici Pam. Merci d’avoir pris contact. Comment puis-je vous aider aujourd’hui ?";
 
-const CONVERSATION_HISTORY_LIMIT = 6;
-const BACKCHANNELS = ["D'accord", "Je vois", "Très bien", "Hmm"];
+// Nous ne voulons injecter le message système et initial qu'une seule fois
+const BASE_CONVERSATION = [
+  { role: "system", content: systemMessage },
+  { role: "assistant", content: initialAssistantMessage }
+];
 
+const CONVERSATION_HISTORY_LIMIT = 4; // on conserve uniquement les derniers échanges pertinents
 const PORT = process.env.PORT || 8080;
+const BACKCHANNELS = ["D'accord", "Je vois", "Très bien", "Hmm"];
 
 // Flags globaux pour gérer le TTS
 let speaking = false;
@@ -57,12 +61,10 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "text/plain" });
     return res.end("Hello, your server is running.");
   }
-
   if (req.method === "POST" && pathname === "/ping") {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ message: "pong" }));
   }
-
   if (req.method === "POST" && pathname === "/twiml") {
     try {
       const filePath = path.join(__dirname, "templates", "streams.xml");
@@ -79,7 +81,6 @@ const server = http.createServer(async (req, res) => {
       return res.end("Internal Server Error (twiml)");
     }
   }
-
   if (req.method === "POST" && pathname === "/outbound") {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
@@ -113,7 +114,6 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
-
   res.writeHead(404, { "Content-Type": "text/plain" });
   res.end("Not Found");
 });
@@ -125,7 +125,6 @@ const wsServer = new WebSocketServer({
   httpServer: server,
   autoAcceptConnections: false,
 });
-
 wsServer.on("request", (request) => {
   if (request.resourceURL.pathname.startsWith("/streams")) {
     const connection = request.accept(null, request.origin);
@@ -143,11 +142,8 @@ class MediaStream {
     this.connection = connection;
     this.streamSid = "";
     this.active = true;
-    // Historique de conversation initiale
-    this.conversation = [
-      { role: "system", content: systemMessage },
-      { role: "assistant", content: initialAssistantMessage }
-    ];
+    // Initialiser la conversation avec le contexte de base (uniquement au début)
+    this.conversation = [...BASE_CONVERSATION];
     console.log(`[${new Date().toISOString()}] Conversation initiale:`, JSON.stringify(this.conversation, null, 2));
     this.inputDebounceTimer = null; // Pour regrouper les inputs utilisateur
     this.setupDeepgram();
@@ -161,7 +157,6 @@ class MediaStream {
         this.handleProtocolMessage(data);
       }
     });
-
     this.connection.on("close", () => {
       this.active = false;
       this.deepgram.finish();
@@ -206,6 +201,7 @@ class MediaStream {
         console.log(`[${new Date().toISOString()}] speak => TTS abort triggered, skipping audio send`);
         return;
       }
+      // Conversion via ffmpeg pour obtenir du mulaw (si nécessaire pour votre cas d'usage)
       const mulawBuffer = await this.convertAudio(audioBuffer);
       if (ttsAbort) return;
       this.sendAudioChunks(mulawBuffer);
@@ -215,15 +211,13 @@ class MediaStream {
     }
   }
 
-  // --- Utilisation de l'API OpenAI Audio pour le streaming realtime TTS HD ---
+  // --- Utilisation du streaming realtime TTS HD d'OpenAI ---
   async synthesizeSpeech(text) {
-    // Utilisation du modèle "tts-1-hd" et d'une voix (ici "alloy")
     const speechResponse = await openai.audio.speech.create({
       model: TTS_MODEL,
       voice: TTS_VOICE,
       input: text,
     });
-    // Récupère le résultat sous forme d'arrayBuffer et le convertit en Buffer
     const arrayBuffer = await speechResponse.arrayBuffer();
     return Buffer.from(arrayBuffer);
   }
@@ -237,14 +231,12 @@ class MediaStream {
         "-f", "mulaw",
         "pipe:1"
       ]);
-
       const chunks = [];
       ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
       ffmpeg.on("close", code => code === 0 
         ? resolve(Buffer.concat(chunks)) 
         : reject(new Error(`FFmpeg error ${code}`))
       );
-      
       ffmpeg.stdin.write(mp3Buffer);
       ffmpeg.stdin.end();
     });
@@ -270,7 +262,6 @@ class MediaStream {
       encoding: "mulaw",
       sample_rate: 8000
     });
-
     this.deepgram.addListener(LiveTranscriptionEvents.Transcript, (data) => {
       if (data.speech_final && data.is_final) {
         const transcript = data.channel.alternatives[0].transcript;
@@ -282,22 +273,20 @@ class MediaStream {
 
   async handleUserInput(transcript) {
     if (!this.active) return;
-    // Filtrer les messages vides ou trop courts (moins de 2 caractères)
+    // Filtrer les messages vides ou trop courts (<2 caractères)
     if (transcript.trim().length < 2) {
       console.log(`[${new Date().toISOString()}] Ignoring empty or too short transcript`);
       return;
     }
     console.log(`[${new Date().toISOString()}] User input received: "${transcript}"`);
-    
     // Interrompre toute réponse en cours
     ttsAbort = true;
     await this.sleep(200);
-    
     // Ajouter le message utilisateur à l'historique
     this.conversation.push({ role: "user", content: transcript });
     console.log(`[${new Date().toISOString()}] Updated conversation history (avant debounce):`, JSON.stringify(this.conversation, null, 2));
+    // Garder uniquement les derniers échanges (sans réinjecter le système et l'initial si déjà envoyés)
     this.conversation = this.conversation.slice(-CONVERSATION_HISTORY_LIMIT);
-    
     // Appliquer un debounce de 800ms avant de générer la réponse
     if (this.inputDebounceTimer) clearTimeout(this.inputDebounceTimer);
     this.inputDebounceTimer = setTimeout(async () => {
@@ -321,13 +310,9 @@ class MediaStream {
         messages: this.conversation,
         stream: true
       });
-
       let fullResponse = "";
       let partialBuffer = "";
-
-      // Petite pause pour réduire la latence initiale
       await this.sleep(300 + Math.random() * 400);
-
       for await (const chunk of stream) {
         if (!this.active || ttsAbort) break;
         const content = chunk.choices[0]?.delta?.content || "";
@@ -345,6 +330,12 @@ class MediaStream {
       }
       if (fullResponse.trim() && !ttsAbort) {
         console.log(`[${new Date().toISOString()}] Assistant response generated: "${fullResponse.trim()}"`);
+        // Pour éviter les répétitions inutiles, à partir du deuxième échange,
+        // on peut retirer le message système et l'initial si présents.
+        if (this.conversation.length > 2) {
+          // On ne garde que les derniers échanges pertinents
+          this.conversation = this.conversation.slice(2);
+        }
         this.conversation.push({ role: "assistant", content: fullResponse });
         console.log(`[${new Date().toISOString()}] Updated conversation history:`, JSON.stringify(this.conversation, null, 2));
       }
